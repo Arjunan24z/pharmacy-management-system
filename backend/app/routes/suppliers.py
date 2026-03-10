@@ -185,9 +185,15 @@ async def get_supplier_history(supplier_id: str):
         
         # Calculate statistics
         total_orders = len(purchase_orders)
-        completed_orders = len([po for po in purchase_orders if po.get("status") == "received"])
-        pending_orders = len([po for po in purchase_orders if po.get("status") in ["pending", "approved"]])
-        total_amount = sum([po.get("total_amount", 0) for po in purchase_orders if po.get("status") == "received"])
+        completed_orders = len([
+            po for po in purchase_orders if po.get("status") in ["delivered", "received"]
+        ])
+        pending_orders = len([
+            po for po in purchase_orders if po.get("status") in ["pending", "ordered", "approved"]
+        ])
+        total_amount = sum([
+            po.get("total_amount", 0) for po in purchase_orders if po.get("status") in ["delivered", "received"]
+        ])
         
         return {
             "supplier": {

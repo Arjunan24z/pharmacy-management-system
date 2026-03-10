@@ -6,6 +6,21 @@ from typing import Optional
 
 router = APIRouter()
 
+STATUS_ALIASES = {
+    "pending": "pending",
+    "ordered": "ordered",
+    "approved": "ordered",
+    "delivered": "delivered",
+    "received": "delivered",
+    "cancelled": "cancelled",
+}
+
+
+def normalize_po_status(raw_status: Optional[str]) -> Optional[str]:
+    if not raw_status:
+        return None
+    return STATUS_ALIASES.get(raw_status.strip().lower(), raw_status.strip().lower())
+
 
 @router.get("/")
 async def get_purchase_orders(
@@ -23,7 +38,13 @@ async def get_purchase_orders(
         # Build query
         query = {}
         if status:
-            query["status"] = status
+            normalized_status = normalize_po_status(status)
+            if normalized_status == "ordered":
+                query["status"] = {"$in": ["ordered", "approved"]}
+            elif normalized_status == "delivered":
+                query["status"] = {"$in": ["delivered", "received"]}
+            else:
+                query["status"] = normalized_status
         if supplier_id:
             query["supplier_id"] = supplier_id
         if start_date:
@@ -147,8 +168,8 @@ async def update_purchase_order(po_id: str, po_data: dict):
         if not existing_po:
             raise HTTPException(status_code=404, detail="Purchase order not found")
         
-        if existing_po.get("status") not in ["pending"]:
-            raise HTTPException(status_code=400, detail="Cannot update approved or received purchase orders")
+        if normalize_po_status(existing_po.get("status")) != "pending":
+            raise HTTPException(status_code=400, detail="Cannot update ordered or delivered purchase orders")
         
         # Remove _id from update data
         po_data.pop("_id", None)
@@ -187,7 +208,7 @@ async def update_purchase_order(po_id: str, po_data: dict):
 @router.put("/{po_id}/approve")
 async def approve_purchase_order(po_id: str, approval_data: dict):
     """
-    Approve a purchase order.
+    Mark a purchase order as ordered (legacy route name retained for compatibility).
     """
     db = get_database()
     
@@ -197,19 +218,19 @@ async def approve_purchase_order(po_id: str, approval_data: dict):
         if not po:
             raise HTTPException(status_code=404, detail="Purchase order not found")
         
-        if po.get("status") != "pending":
-            raise HTTPException(status_code=400, detail=f"Cannot approve PO with status: {po.get('status')}")
+        if normalize_po_status(po.get("status")) != "pending":
+            raise HTTPException(status_code=400, detail=f"Cannot place order for PO with status: {po.get('status')}")
         
         # Update status
         result = await db.purchase_orders.update_one(
             {"_id": ObjectId(po_id)},
             {
                 "$set": {
-                    "status": "approved",
-                    "approved_by": approval_data.get("approved_by", "Admin"),
-                    "approved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "ordered",
+                    "ordered_by": approval_data.get("ordered_by") or approval_data.get("approved_by", "Admin"),
+                    "ordered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "approval_notes": approval_data.get("notes", "")
+                    "order_notes": approval_data.get("notes", "")
                 }
             }
         )
@@ -235,16 +256,16 @@ async def receive_purchase_order(po_id: str, receive_data: dict):
     db = get_database()
     
     try:
-        # Check if PO exists and is approved
+        # Check if PO exists and is ordered
         po = await db.purchase_orders.find_one({"_id": ObjectId(po_id)})
         if not po:
             raise HTTPException(status_code=404, detail="Purchase order not found")
         
-        if po.get("status") not in ["approved"]:
-            raise HTTPException(status_code=400, detail=f"Can only receive approved POs. Current status: {po.get('status')}")
+        if normalize_po_status(po.get("status")) != "ordered":
+            raise HTTPException(status_code=400, detail=f"Can only receive ordered POs. Current status: {po.get('status')}")
         
         # Update inventory for each item
-        items_received = receive_data.get("items_received", [])
+        items_received = receive_data.get("items_received", receive_data.get("items", []))
         
         for item in items_received:
             medicine_id = item.get("medicine_id")
@@ -278,9 +299,9 @@ async def receive_purchase_order(po_id: str, receive_data: dict):
             {"_id": ObjectId(po_id)},
             {
                 "$set": {
-                    "status": "received",
+                    "status": "delivered",
                     "received_by": receive_data.get("received_by", "Admin"),
-                    "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "delivered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "items_received": items_received,
                     "receive_notes": receive_data.get("notes", ""),
@@ -303,7 +324,7 @@ async def receive_purchase_order(po_id: str, receive_data: dict):
         updated_po["_id"] = str(updated_po["_id"])
         
         return {
-            "message": "Purchase order received and inventory updated",
+            "message": "Purchase order delivered and inventory updated",
             "purchase_order": updated_po
         }
     
@@ -324,8 +345,8 @@ async def cancel_purchase_order(po_id: str, cancel_data: dict):
         if not po:
             raise HTTPException(status_code=404, detail="Purchase order not found")
         
-        if po.get("status") == "received":
-            raise HTTPException(status_code=400, detail="Cannot cancel a received purchase order")
+        if normalize_po_status(po.get("status")) == "delivered":
+            raise HTTPException(status_code=400, detail="Cannot cancel a delivered purchase order")
         
         # Update status
         result = await db.purchase_orders.update_one(
@@ -393,13 +414,13 @@ async def get_po_statistics():
         # Count by status
         total_pos = await db.purchase_orders.count_documents({})
         pending = await db.purchase_orders.count_documents({"status": "pending"})
-        approved = await db.purchase_orders.count_documents({"status": "approved"})
-        received = await db.purchase_orders.count_documents({"status": "received"})
+        ordered = await db.purchase_orders.count_documents({"status": {"$in": ["ordered", "approved"]}})
+        delivered = await db.purchase_orders.count_documents({"status": {"$in": ["delivered", "received"]}})
         cancelled = await db.purchase_orders.count_documents({"status": "cancelled"})
         
         # Calculate total amount (received orders only)
         pipeline = [
-            {"$match": {"status": "received"}},
+            {"$match": {"status": {"$in": ["delivered", "received"]}}},
             {"$group": {
                 "_id": None,
                 "total_amount": {"$sum": "$total_amount"}
@@ -414,8 +435,8 @@ async def get_po_statistics():
             "total_purchase_orders": total_pos,
             "by_status": {
                 "pending": pending,
-                "approved": approved,
-                "received": received,
+                "ordered": ordered,
+                "delivered": delivered,
                 "cancelled": cancelled
             },
             "total_amount_received": total_amount

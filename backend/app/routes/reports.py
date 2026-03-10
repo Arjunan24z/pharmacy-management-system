@@ -3,6 +3,7 @@ from app.database import get_database
 from datetime import datetime, timedelta
 from typing import Optional
 from bson import ObjectId
+from collections import defaultdict
 
 router = APIRouter()
 
@@ -13,6 +14,36 @@ def parse_date(date_str: str) -> datetime:
         return datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+
+def parse_record_date(value: Optional[str]) -> Optional[datetime]:
+    """Parse common stored date formats from DB rows."""
+    if not value:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+
+    # Common fallback: datetime-like string with date prefix.
+    try:
+        return datetime.strptime(raw[:10], "%Y-%m-%d")
+    except ValueError:
+        pass
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 @router.get("/sales")
@@ -39,196 +70,193 @@ async def get_sales_report(
     end = end.replace(hour=23, minute=59, second=59)
     
     try:
-        # Get all sales in date range
-        sales_cursor = db.sales.find({
-            "sale_date": {
-                "$gte": start.strftime("%Y-%m-%d"),
-                "$lte": end.strftime("%Y-%m-%d")
-            }
+        # Fetch data first, then apply robust date filtering in Python.
+        raw_sales = await db.sales.find().to_list(length=100000)
+        raw_bills = await db.bills.find().to_list(length=100000)
+
+        filtered_bills = []
+        for bill in raw_bills:
+            bill_dt = parse_record_date(bill.get("created_at"))
+            if bill_dt and start <= bill_dt <= end:
+                bill["_created_dt"] = bill_dt
+                filtered_bills.append(bill)
+
+        filtered_sales = []
+        for sale in raw_sales:
+            sale_dt = parse_record_date(sale.get("sale_date"))
+            if sale_dt and start <= sale_dt <= end:
+                sale["_sale_dt"] = sale_dt
+                filtered_sales.append(sale)
+
+        # Build unified sales entries from bills + legacy sales collection.
+        unified_sales = []
+
+        for bill in filtered_bills:
+            for item in bill.get("items", []):
+                unified_sales.append({
+                    "medicine_id": item.get("medicine_id"),
+                    "medicine_name": item.get("medicine_name", "Unknown"),
+                    "quantity": item.get("quantity", 0),
+                    "total": item.get("total", 0),
+                    "sale_date": bill["_created_dt"],
+                    "source": "billing"
+                })
+
+        # Keep legacy sales rows too (useful for older data before billing migration).
+        for sale in filtered_sales:
+            unified_sales.append({
+                "medicine_id": sale.get("medicine_id"),
+                "medicine_name": sale.get("medicine_name", "Unknown"),
+                "quantity": sale.get("quantity", 0),
+                "total": sale.get("total", 0),
+                "sale_date": sale["_sale_dt"],
+                "source": "sales"
+            })
+
+        total_revenue = sum(float(b.get("grand_total", 0)) for b in filtered_bills)
+        total_subtotal = sum(float(b.get("subtotal", 0)) for b in filtered_bills)
+        total_gst = sum(float(b.get("gst_amount", 0)) for b in filtered_bills)
+        total_sales_count = len(unified_sales)
+        total_bills_count = len(filtered_bills)
+
+        # Get medicine category map once to avoid repeated DB lookups.
+        medicines = await db.medicines.find().to_list(length=100000)
+        medicine_category_map = {str(m.get("_id")): m.get("category", "Unknown") for m in medicines}
+
+        category_sales = defaultdict(lambda: {
+            "category": "Unknown",
+            "total_sales": 0,
+            "total_quantity": 0,
+            "total_revenue": 0
         })
-        sales = await sales_cursor.to_list(length=10000)
-        
-        # Get all bills in date range
-        bills_cursor = db.bills.find({
-            "created_at": {
-                "$gte": start.strftime("%Y-%m-%d"),
-                "$lte": end.strftime("%Y-%m-%d")
-            }
+
+        for sale in unified_sales:
+            med_id = sale.get("medicine_id")
+            category = medicine_category_map.get(str(med_id), "Unknown")
+            category_sales[category]["category"] = category
+            category_sales[category]["total_sales"] += 1
+            category_sales[category]["total_quantity"] += int(sale.get("quantity", 0) or 0)
+            category_sales[category]["total_revenue"] += float(sale.get("total", 0) or 0)
+
+        category_analysis = sorted(category_sales.values(), key=lambda x: x["total_revenue"], reverse=True)
+
+        medicine_sales = defaultdict(lambda: {
+            "medicine_id": "",
+            "medicine_name": "Unknown",
+            "total_quantity": 0,
+            "total_revenue": 0,
+            "sales_count": 0
         })
-        bills = await bills_cursor.to_list(length=10000)
-        
-        # Calculate total revenue from bills
-        total_revenue = sum(bill["grand_total"] for bill in bills)
-        total_sales_count = len(sales)
-        total_bills_count = len(bills)
-        
-        # Calculate subtotal (before GST) from bills
-        total_subtotal = sum(bill["subtotal"] for bill in bills)
-        total_gst = sum(bill["gst_amount"] for bill in bills)
-        
-        # Category-wise sales analysis
-        category_sales = {}
-        for sale in sales:
-            # Get medicine details to find category
-            medicine = await db.medicines.find_one({"_id": ObjectId(sale["medicine_id"])})
-            if medicine:
-                category = medicine.get("category", "Unknown")
-                if category not in category_sales:
-                    category_sales[category] = {
-                        "category": category,
-                        "total_sales": 0,
-                        "total_quantity": 0,
-                        "total_revenue": 0
-                    }
-                category_sales[category]["total_sales"] += 1
-                category_sales[category]["total_quantity"] += sale["quantity"]
-                category_sales[category]["total_revenue"] += sale["total"]
-        
-        category_analysis = list(category_sales.values())
-        category_analysis.sort(key=lambda x: x["total_revenue"], reverse=True)
-        
-        # Top-selling medicines
-        medicine_sales = {}
-        for sale in sales:
-            med_id = sale["medicine_id"]
-            if med_id not in medicine_sales:
-                medicine_sales[med_id] = {
-                    "medicine_id": med_id,
-                    "medicine_name": sale["medicine_name"],
-                    "total_quantity": 0,
-                    "total_revenue": 0,
-                    "sales_count": 0
-                }
-            medicine_sales[med_id]["total_quantity"] += sale["quantity"]
-            medicine_sales[med_id]["total_revenue"] += sale["total"]
+
+        for sale in unified_sales:
+            med_id = str(sale.get("medicine_id") or sale.get("medicine_name") or "unknown")
+            medicine_sales[med_id]["medicine_id"] = med_id
+            medicine_sales[med_id]["medicine_name"] = sale.get("medicine_name", "Unknown")
+            medicine_sales[med_id]["total_quantity"] += int(sale.get("quantity", 0) or 0)
+            medicine_sales[med_id]["total_revenue"] += float(sale.get("total", 0) or 0)
             medicine_sales[med_id]["sales_count"] += 1
-        
-        top_medicines = sorted(
-            medicine_sales.values(),
-            key=lambda x: x["total_revenue"],
-            reverse=True
-        )[:10]
-        
-        # Sales by payment mode (from bills)
-        payment_mode_sales = {}
-        for bill in bills:
+
+        top_medicines = sorted(medicine_sales.values(), key=lambda x: x["total_revenue"], reverse=True)[:20]
+
+        payment_mode_sales = defaultdict(lambda: {
+            "payment_mode": "Unknown",
+            "count": 0,
+            "total_amount": 0
+        })
+        for bill in filtered_bills:
             mode = bill.get("payment_mode", "Unknown")
-            if mode not in payment_mode_sales:
-                payment_mode_sales[mode] = {
-                    "payment_mode": mode,
-                    "count": 0,
-                    "total_amount": 0
-                }
+            payment_mode_sales[mode]["payment_mode"] = mode
             payment_mode_sales[mode]["count"] += 1
-            payment_mode_sales[mode]["total_amount"] += bill["grand_total"]
-        
+            payment_mode_sales[mode]["total_amount"] += float(bill.get("grand_total", 0) or 0)
         payment_analysis = list(payment_mode_sales.values())
-        
-        # Revenue trends based on period
+
         trends = []
         if period == "daily":
-            # Daily trends
             current = start
             while current <= end:
-                day_str = current.strftime("%Y-%m-%d")
-                day_sales = [s for s in sales if s["sale_date"] == day_str]
-                day_bills = [b for b in bills if b["created_at"].startswith(day_str)]
-                
+                day_sales = [s for s in unified_sales if s["sale_date"].date() == current.date()]
+                day_bills = [b for b in filtered_bills if b["_created_dt"].date() == current.date()]
                 trends.append({
-                    "date": day_str,
+                    "date": current.strftime("%Y-%m-%d"),
                     "label": current.strftime("%b %d"),
                     "sales_count": len(day_sales),
                     "bills_count": len(day_bills),
-                    "revenue": sum(b["grand_total"] for b in day_bills),
-                    "quantity_sold": sum(s["quantity"] for s in day_sales)
+                    "revenue": sum(float(b.get("grand_total", 0) or 0) for b in day_bills),
+                    "quantity_sold": sum(int(s.get("quantity", 0) or 0) for s in day_sales)
                 })
                 current += timedelta(days=1)
-        
         elif period == "weekly":
-            # Weekly trends
             current = start
             week_num = 1
             while current <= end:
                 week_end = min(current + timedelta(days=6), end)
-                week_sales = [s for s in sales if 
-                            start <= datetime.strptime(s["sale_date"], "%Y-%m-%d") <= week_end]
-                week_bills = [b for b in bills if 
-                            start <= datetime.strptime(b["created_at"][:10], "%Y-%m-%d") <= week_end]
-                
+                week_sales = [s for s in unified_sales if current.date() <= s["sale_date"].date() <= week_end.date()]
+                week_bills = [b for b in filtered_bills if current.date() <= b["_created_dt"].date() <= week_end.date()]
                 trends.append({
                     "date": current.strftime("%Y-%m-%d"),
                     "label": f"Week {week_num}",
                     "sales_count": len(week_sales),
                     "bills_count": len(week_bills),
-                    "revenue": sum(b["grand_total"] for b in week_bills),
-                    "quantity_sold": sum(s["quantity"] for s in week_sales)
+                    "revenue": sum(float(b.get("grand_total", 0) or 0) for b in week_bills),
+                    "quantity_sold": sum(int(s.get("quantity", 0) or 0) for s in week_sales)
                 })
                 current = week_end + timedelta(days=1)
                 week_num += 1
-        
         elif period == "monthly":
-            # Monthly trends
-            months = {}
-            for sale in sales:
-                sale_date = datetime.strptime(sale["sale_date"], "%Y-%m-%d")
-                month_key = sale_date.strftime("%Y-%m")
-                if month_key not in months:
-                    months[month_key] = {
-                        "date": month_key + "-01",
-                        "label": sale_date.strftime("%b %Y"),
-                        "sales_count": 0,
-                        "bills_count": 0,
-                        "revenue": 0,
-                        "quantity_sold": 0
-                    }
-                months[month_key]["sales_count"] += 1
-                months[month_key]["quantity_sold"] += sale["quantity"]
-            
-            for bill in bills:
-                bill_date = datetime.strptime(bill["created_at"][:10], "%Y-%m-%d")
-                month_key = bill_date.strftime("%Y-%m")
-                if month_key in months:
-                    months[month_key]["bills_count"] += 1
-                    months[month_key]["revenue"] += bill["grand_total"]
-            
-            trends = sorted(months.values(), key=lambda x: x["date"])
-        
-        elif period == "yearly":
-            # Yearly trends
-            years = {}
-            for sale in sales:
-                sale_date = datetime.strptime(sale["sale_date"], "%Y-%m-%d")
-                year_key = sale_date.strftime("%Y")
-                if year_key not in years:
-                    years[year_key] = {
-                        "date": year_key + "-01-01",
-                        "label": year_key,
-                        "sales_count": 0,
-                        "bills_count": 0,
-                        "revenue": 0,
-                        "quantity_sold": 0
-                    }
-                years[year_key]["sales_count"] += 1
-                years[year_key]["quantity_sold"] += sale["quantity"]
-            
-            for bill in bills:
-                bill_date = datetime.strptime(bill["created_at"][:10], "%Y-%m-%d")
-                year_key = bill_date.strftime("%Y")
-                if year_key in years:
-                    years[year_key]["bills_count"] += 1
-                    years[year_key]["revenue"] += bill["grand_total"]
-            
-            trends = sorted(years.values(), key=lambda x: x["date"])
-        
-        # Calculate average values
+            buckets = defaultdict(lambda: {
+                "date": "",
+                "label": "",
+                "sales_count": 0,
+                "bills_count": 0,
+                "revenue": 0,
+                "quantity_sold": 0
+            })
+            for sale in unified_sales:
+                key = sale["sale_date"].strftime("%Y-%m")
+                buckets[key]["date"] = f"{key}-01"
+                buckets[key]["label"] = sale["sale_date"].strftime("%b %Y")
+                buckets[key]["sales_count"] += 1
+                buckets[key]["quantity_sold"] += int(sale.get("quantity", 0) or 0)
+            for bill in filtered_bills:
+                key = bill["_created_dt"].strftime("%Y-%m")
+                buckets[key]["date"] = f"{key}-01"
+                buckets[key]["label"] = bill["_created_dt"].strftime("%b %Y")
+                buckets[key]["bills_count"] += 1
+                buckets[key]["revenue"] += float(bill.get("grand_total", 0) or 0)
+            trends = sorted(buckets.values(), key=lambda x: x["date"])
+        else:  # yearly
+            buckets = defaultdict(lambda: {
+                "date": "",
+                "label": "",
+                "sales_count": 0,
+                "bills_count": 0,
+                "revenue": 0,
+                "quantity_sold": 0
+            })
+            for sale in unified_sales:
+                key = sale["sale_date"].strftime("%Y")
+                buckets[key]["date"] = f"{key}-01-01"
+                buckets[key]["label"] = key
+                buckets[key]["sales_count"] += 1
+                buckets[key]["quantity_sold"] += int(sale.get("quantity", 0) or 0)
+            for bill in filtered_bills:
+                key = bill["_created_dt"].strftime("%Y")
+                buckets[key]["date"] = f"{key}-01-01"
+                buckets[key]["label"] = key
+                buckets[key]["bills_count"] += 1
+                buckets[key]["revenue"] += float(bill.get("grand_total", 0) or 0)
+            trends = sorted(buckets.values(), key=lambda x: x["date"])
+
         avg_bill_value = total_revenue / total_bills_count if total_bills_count > 0 else 0
         avg_items_per_bill = total_sales_count / total_bills_count if total_bills_count > 0 else 0
-        
+        gst_percentage = (total_gst / total_subtotal * 100) if total_subtotal > 0 else 0
+
         return {
             "summary": {
                 "total_revenue": round(total_revenue, 2),
                 "total_subtotal": round(total_subtotal, 2),
                 "total_gst": round(total_gst, 2),
+                "gst_percentage": round(gst_percentage, 2),
                 "total_sales": total_sales_count,
                 "total_bills": total_bills_count,
                 "avg_bill_value": round(avg_bill_value, 2),
@@ -455,18 +483,15 @@ async def get_customer_report(
     end = parse_date(end_date)
     
     try:
-        # Get all customers
-        customers_cursor = db.customers.find()
-        customers = await customers_cursor.to_list(length=10000)
-        
-        # Get all bills in date range
-        bills_cursor = db.bills.find({
-            "created_at": {
-                "$gte": start.strftime("%Y-%m-%d"),
-                "$lte": end.strftime("%Y-%m-%d")
-            }
-        })
-        bills = await bills_cursor.to_list(length=10000)
+        customers = await db.customers.find().to_list(length=100000)
+        raw_bills = await db.bills.find().to_list(length=100000)
+
+        bills = []
+        for bill in raw_bills:
+            bill_dt = parse_record_date(bill.get("created_at"))
+            if bill_dt and start <= bill_dt <= end:
+                bill["_created_dt"] = bill_dt
+                bills.append(bill)
         
         # Calculate customer purchase patterns
         customer_purchases = {}
@@ -497,7 +522,7 @@ async def get_customer_report(
         # Top customers by revenue
         top_customers = sorted(
             customer_purchases.values(),
-            key=lambda x: x["total_spent"],
+            key=lambda x: (x["bills_count"], x["total_spent"]),
             reverse=True
         )[:20]
         

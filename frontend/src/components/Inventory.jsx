@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, AlertTriangle } from 'lucide-react';
 import { api } from '../services/api';
+import { MEDICINE_CATEGORIES } from '../constants/medicine';
 
 export default function Inventory() {
   const [medicines, setMedicines] = useState([]);
@@ -140,14 +141,17 @@ export default function Inventory() {
               required
             />
 
-            <input
-              type="text"
-              placeholder="Category"
+            <select
               value={formData.category}
               onChange={(e) => setFormData({ ...formData, category: e.target.value })}
               className="border p-2 rounded"
               required
-            />
+            >
+              <option value="" disabled>Select Category</option>
+              {MEDICINE_CATEGORIES.map((category) => (
+                <option key={category} value={category}>{category}</option>
+              ))}
+            </select>
 
             <input
               type="number"

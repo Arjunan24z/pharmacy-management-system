@@ -15,7 +15,8 @@ import {
   Package,
   UserPlus,
   List,
-  Edit
+  Edit,
+  CheckCircle
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useTheme } from '../contexts/ThemeContext';
@@ -33,9 +34,25 @@ export default function Billing() {
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [showManageStock, setShowManageStock] = useState(false);
   const [editBill, setEditBill] = useState(null);
+  const [showDashboardBillToast, setShowDashboardBillToast] = useState(false);
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  useEffect(() => {
+    const toastFlag = sessionStorage.getItem('billingToast');
+    if (toastFlag === 'dashboard-bill-created') {
+      setShowDashboardBillToast(true);
+      sessionStorage.removeItem('billingToast');
+
+      const timer = setTimeout(() => {
+        setShowDashboardBillToast(false);
+      }, 3500);
+
+      return () => clearTimeout(timer);
+    }
   }, []);
 
   const loadData = async () => {
@@ -51,6 +68,11 @@ export default function Billing() {
     } catch (error) {
       console.error('Error loading billing data:', error);
     }
+  };
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
   };
 
   // Calculate statistics
@@ -69,10 +91,10 @@ export default function Billing() {
     if (window.confirm('Are you sure you want to delete this bill?')) {
       try {
         await api.deleteBill(billId);
-        alert('✅ Bill deleted successfully!');
+        showToast('Bill deleted successfully.');
         loadData();
       } catch (error) {
-        alert('❌ Error deleting bill: ' + error.message);
+        showToast(`Error deleting bill: ${error.message}`, 'error');
       }
     }
   };
@@ -80,16 +102,48 @@ export default function Billing() {
   const handleCustomerSubmit = async (customerData) => {
     try {
       await api.addCustomer(customerData);
-      alert('✅ Customer added successfully!');
+      showToast('Customer added successfully.');
       setShowAddCustomer(false);
       loadData();
     } catch (error) {
-      alert('❌ Error adding customer: ' + error.message);
+      showToast(`Error adding customer: ${error.message}`, 'error');
     }
   };
 
   return (
     <div className={`p-6 space-y-6 ${isDark ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
+      {showDashboardBillToast && (
+        <div className={`rounded-xl p-4 border flex items-start gap-3 ${
+          isDark
+            ? 'bg-green-900/20 border-green-700 text-green-200'
+            : 'bg-green-50 border-green-200 text-green-800'
+        }`}>
+          <CheckCircle size={20} className="mt-0.5" />
+          <div>
+            <p className="font-semibold">Bill created from Dashboard</p>
+            <p className="text-sm opacity-90">Billing history refreshed and the latest invoice is now available to view/print.</p>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className={`rounded-xl p-4 border flex items-start gap-3 ${
+          toast.type === 'error'
+            ? isDark
+              ? 'bg-red-900/20 border-red-700 text-red-200'
+              : 'bg-red-50 border-red-200 text-red-800'
+            : isDark
+            ? 'bg-green-900/20 border-green-700 text-green-200'
+            : 'bg-green-50 border-green-200 text-green-800'
+        }`}>
+          <CheckCircle size={20} className="mt-0.5" />
+          <div>
+            <p className="font-semibold">{toast.type === 'error' ? 'Action failed' : 'Success'}</p>
+            <p className="text-sm opacity-90">{toast.message}</p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
@@ -318,10 +372,14 @@ export default function Billing() {
           isDark={isDark}
           medicines={medicines}
           customers={customers}
+          onNotify={showToast}
           onClose={() => setShowAddBill(false)}
-          onSuccess={() => {
+          onSuccess={async (createdBill) => {
             setShowAddBill(false);
-            loadData();
+            await loadData();
+            if (createdBill) {
+              setSelectedBill(createdBill);
+            }
           }}
         />
       )}
@@ -333,6 +391,7 @@ export default function Billing() {
           bill={editBill}
           medicines={medicines}
           customers={customers}
+          onNotify={showToast}
           onClose={() => setEditBill(null)}
           onSuccess={() => {
             setEditBill(null);
@@ -376,6 +435,7 @@ export default function Billing() {
         <ManageStockModal
           isDark={isDark}
           medicines={medicines}
+          onNotify={showToast}
           onClose={() => {
             setShowManageStock(false);
             loadData();
@@ -412,7 +472,13 @@ function StatsCard({ icon, title, value, color, isDark }) {
 }
 
 // Add Bill Modal Component
-function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
+function AddBillModal({ isDark, medicines, customers, onClose, onSuccess, onNotify }) {
+  const [customerMode, setCustomerMode] = useState('existing');
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [itemError, setItemError] = useState('');
+  const [submitError, setSubmitError] = useState('');
   const [formData, setFormData] = useState({
     customer_name: '',
     customer_phone: '',
@@ -421,7 +487,8 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
     payment_mode: 'Cash',
     items: [],
     subtotal: 0,
-    gst_percentage: 18,
+    gst_enabled: false,
+    gst_percentage: '',
     gst_amount: 0,
     grand_total: 0
   });
@@ -429,47 +496,86 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
   const [currentItem, setCurrentItem] = useState({
     medicine_id: '',
     medicine_name: '',
-    quantity: 1,
+    quantity: '',
     price: 0,
     total: 0
   });
 
+  const recalculateTotals = (items, nextFormData = formData) => {
+    const subtotal = items.reduce((sum, item) => sum + item.total, 0);
+    const gstRate = nextFormData.gst_enabled ? (parseFloat(nextFormData.gst_percentage) || 0) : 0;
+    const gst_amount = (subtotal * gstRate) / 100;
+    const grand_total = subtotal + gst_amount;
+
+    return {
+      subtotal,
+      gst_amount,
+      grand_total,
+      gst_percentage: nextFormData.gst_enabled ? nextFormData.gst_percentage : '',
+      gst_enabled: nextFormData.gst_enabled
+    };
+  };
+
+  const filteredCustomers = customers.filter((customer) => {
+    const query = customerSearch.trim().toLowerCase();
+    if (!query) return true;
+
+    return (
+      customer.name?.toLowerCase().includes(query) ||
+      customer.phone?.toLowerCase().includes(query)
+    );
+  });
+
+  const handleCustomerSelect = (customerId) => {
+    setFieldErrors((prev) => ({ ...prev, customer_name: '', customer_phone: '', selectedCustomerId: '' }));
+    setSelectedCustomerId(customerId);
+    const customer = customers.find((c) => c._id === customerId);
+    if (!customer) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      customer_name: customer.name || '',
+      customer_phone: customer.phone || '',
+      billing_address: customer.address || ''
+    }));
+  };
+
   const handleAddItem = () => {
-    if (!currentItem.medicine_id || currentItem.quantity <= 0) {
-      alert('Please select a medicine and enter valid quantity');
+    setItemError('');
+    const quantity = Number(currentItem.quantity);
+
+    if (!currentItem.medicine_id || !Number.isFinite(quantity) || quantity <= 0) {
+      setItemError('Please select a medicine and enter a valid quantity.');
       return;
     }
 
     const medicine = medicines.find(m => m._id === currentItem.medicine_id);
     if (!medicine) return;
 
-    if (currentItem.quantity > medicine.quantity) {
-      alert(`Only ${medicine.quantity} units available!`);
+    if (quantity > medicine.quantity) {
+      setItemError(`Only ${medicine.quantity} units available for ${medicine.name}.`);
       return;
     }
 
     const newItem = {
       ...currentItem,
-      total: currentItem.quantity * currentItem.price
+      quantity,
+      total: quantity * currentItem.price
     };
 
     const newItems = [...formData.items, newItem];
-    const subtotal = newItems.reduce((sum, item) => sum + item.total, 0);
-    const gst_amount = (subtotal * formData.gst_percentage) / 100;
-    const grand_total = subtotal + gst_amount;
+    const totals = recalculateTotals(newItems);
 
     setFormData({
       ...formData,
       items: newItems,
-      subtotal,
-      gst_amount,
-      grand_total
+      ...totals
     });
 
     setCurrentItem({
       medicine_id: '',
       medicine_name: '',
-      quantity: 1,
+      quantity: '',
       price: 0,
       total: 0
     });
@@ -477,16 +583,12 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
 
   const handleRemoveItem = (index) => {
     const newItems = formData.items.filter((_, i) => i !== index);
-    const subtotal = newItems.reduce((sum, item) => sum + item.total, 0);
-    const gst_amount = (subtotal * formData.gst_percentage) / 100;
-    const grand_total = subtotal + gst_amount;
+    const totals = recalculateTotals(newItems);
 
     setFormData({
       ...formData,
       items: newItems,
-      subtotal,
-      gst_amount,
-      grand_total
+      ...totals
     });
   };
 
@@ -496,27 +598,106 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
       setCurrentItem({
         medicine_id: medicine._id,
         medicine_name: medicine.name,
-        quantity: 1,
+        quantity: '1',
         price: medicine.price,
         total: medicine.price
       });
     }
   };
 
+  const handleGstEnabledChange = (checked) => {
+    const nextFormData = {
+      ...formData,
+      gst_enabled: checked,
+      gst_percentage: checked ? (formData.gst_percentage || '18') : ''
+    };
+    const totals = recalculateTotals(formData.items, nextFormData);
+
+    setFormData({
+      ...nextFormData,
+      ...totals
+    });
+  };
+
+  const handleGstPercentageChange = (value) => {
+    const nextFormData = {
+      ...formData,
+      gst_percentage: value
+    };
+    const totals = recalculateTotals(formData.items, nextFormData);
+
+    setFormData({
+      ...nextFormData,
+      ...totals
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setSubmitError('');
+    setItemError('');
+
+    const nextErrors = {};
+
+    if (customerMode === 'existing' && !selectedCustomerId) {
+      nextErrors.selectedCustomerId = 'Please select an existing customer.';
+    }
+
+    if (!formData.customer_name.trim()) {
+      nextErrors.customer_name = 'Customer name is required.';
+    }
+
+    if (customerMode === 'new' && !formData.customer_phone.trim()) {
+      nextErrors.customer_phone = 'Phone number is required for new customer.';
+    }
 
     if (formData.items.length === 0) {
-      alert('Please add at least one item to the bill');
+      setItemError('Please add at least one medicine item to create a bill.');
+    }
+
+    setFieldErrors(nextErrors);
+
+    if (Object.keys(nextErrors).length > 0 || formData.items.length === 0) {
       return;
     }
 
     try {
-      await api.createBill(formData);
-      alert('✅ Bill created successfully!');
-      onSuccess();
+      if (customerMode === 'new') {
+        try {
+          await api.addCustomer({
+            name: formData.customer_name.trim(),
+            phone: formData.customer_phone.trim(),
+            address: formData.billing_address?.trim() || null,
+            email: null
+          });
+        } catch (customerError) {
+          if (!String(customerError.message || '').toLowerCase().includes('already exists')) {
+            throw customerError;
+          }
+        }
+      }
+
+      const billPayload = {
+        customer_name: formData.customer_name,
+        customer_phone: formData.customer_phone,
+        customer_gstin: formData.customer_gstin,
+        billing_address: formData.billing_address,
+        payment_mode: formData.payment_mode,
+        items: formData.items,
+        subtotal: formData.subtotal,
+        gst_percentage: formData.gst_enabled ? (parseFloat(formData.gst_percentage) || 0) : 0,
+        gst_amount: formData.gst_amount,
+        grand_total: formData.grand_total
+      };
+
+      const created = await api.createBill(billPayload);
+      const createdBill = created?.id ? await api.getBill(created.id) : null;
+      if (onNotify) {
+        onNotify('Bill created successfully.');
+      }
+      onSuccess(createdBill);
     } catch (error) {
-      alert('❌ Error creating bill: ' + error.message);
+      setSubmitError(error.message || 'Error creating bill. Please try again.');
     }
   };
 
@@ -534,7 +715,86 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          {submitError && (
+            <div className={`p-3 rounded-lg border ${
+              isDark ? 'bg-red-900/20 border-red-700 text-red-300' : 'bg-red-50 border-red-200 text-red-700'
+            }`}>
+              {submitError}
+            </div>
+          )}
+
           {/* Customer Details */}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerMode('existing');
+                setSubmitError('');
+              }}
+              className={`px-4 py-2 rounded-lg border ${
+                customerMode === 'existing'
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : isDark
+                  ? 'border-gray-600 hover:bg-gray-700'
+                  : 'border-gray-300 hover:bg-gray-100'
+              }`}
+            >
+              Existing Customer
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerMode('new');
+                setSelectedCustomerId('');
+                setFieldErrors((prev) => ({ ...prev, selectedCustomerId: '' }));
+                setSubmitError('');
+              }}
+              className={`px-4 py-2 rounded-lg border ${
+                customerMode === 'new'
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : isDark
+                  ? 'border-gray-600 hover:bg-gray-700'
+                  : 'border-gray-300 hover:bg-gray-100'
+              }`}
+            >
+              New Customer
+            </button>
+          </div>
+
+          {customerMode === 'existing' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Search Customer</label>
+                <input
+                  type="text"
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
+                  placeholder="Search by name or mobile number"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Select Customer *</label>
+                <select
+                  required={customerMode === 'existing'}
+                  value={selectedCustomerId}
+                  onChange={(e) => handleCustomerSelect(e.target.value)}
+                  className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
+                >
+                  <option value="">Select customer</option>
+                  {filteredCustomers.map((customer) => (
+                    <option key={customer._id} value={customer._id}>
+                      {customer.name} ({customer.phone})
+                    </option>
+                  ))}
+                </select>
+                {fieldErrors.selectedCustomerId && (
+                  <p className="text-sm text-red-500 mt-1">{fieldErrors.selectedCustomerId}</p>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium mb-2">Customer Name *</label>
@@ -545,17 +805,26 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
                 onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
                 className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
                 placeholder="Enter customer name"
+                readOnly={customerMode === 'existing'}
               />
+              {fieldErrors.customer_name && (
+                <p className="text-sm text-red-500 mt-1">{fieldErrors.customer_name}</p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium mb-2">Phone Number</label>
               <input
                 type="tel"
+                required={customerMode === 'new'}
                 value={formData.customer_phone}
                 onChange={(e) => setFormData({ ...formData, customer_phone: e.target.value })}
                 className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
                 placeholder="Enter phone number"
+                readOnly={customerMode === 'existing'}
               />
+              {fieldErrors.customer_phone && (
+                <p className="text-sm text-red-500 mt-1">{fieldErrors.customer_phone}</p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium mb-2">Payment Mode *</label>
@@ -577,6 +846,30 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
             <h3 className="text-sm font-semibold mb-3 text-blue-600 dark:text-blue-400">GST Details (Optional)</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
+                <label className="inline-flex items-center gap-2 mb-3">
+                  <input
+                    type="checkbox"
+                    checked={formData.gst_enabled}
+                    onChange={(e) => handleGstEnabledChange(e.target.checked)}
+                  />
+                  <span className="text-sm font-medium">Apply GST to this bill</span>
+                </label>
+
+                {formData.gst_enabled && (
+                  <>
+                    <label className="block text-sm font-medium mb-2">GST %</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={formData.gst_percentage}
+                      onChange={(e) => handleGstPercentageChange(e.target.value)}
+                      className={`w-full px-4 py-2 border rounded-lg mb-3 ${isDark ? 'bg-gray-800 border-gray-600' : 'border-gray-300'}`}
+                      placeholder="Enter GST percentage"
+                    />
+                  </>
+                )}
+
                 <label className="block text-sm font-medium mb-2">Customer GSTIN</label>
                 <input
                   type="text"
@@ -625,11 +918,12 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
                   min="1"
                   value={currentItem.quantity}
                   onChange={(e) => {
-                    const qty = parseInt(e.target.value) || 1;
+                    const qtyRaw = e.target.value;
+                    const qty = parseInt(qtyRaw, 10);
                     setCurrentItem({
                       ...currentItem,
-                      quantity: qty,
-                      total: qty * currentItem.price
+                      quantity: qtyRaw,
+                      total: (Number.isFinite(qty) ? qty : 0) * currentItem.price
                     });
                   }}
                   className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-800 border-gray-600' : 'border-gray-300'}`}
@@ -645,6 +939,9 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
                 Add
               </button>
             </div>
+            {itemError && (
+              <p className="text-sm text-red-500 mt-2">{itemError}</p>
+            )}
           </div>
 
           {/* Items List */}
@@ -681,7 +978,7 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
                 <span className="font-semibold">₹{formData.subtotal.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-lg">
-                <span>GST ({formData.gst_percentage}%):</span>
+                <span>GST {formData.gst_enabled ? `(${parseFloat(formData.gst_percentage || 0)}%)` : '(Not Applied)'}:</span>
                 <span className="font-semibold">₹{formData.gst_amount.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-xl font-bold text-green-600 dark:text-green-400 pt-2 border-t border-gray-300 dark:border-gray-600">
@@ -715,7 +1012,10 @@ function AddBillModal({ isDark, medicines, customers, onClose, onSuccess }) {
 }
 
 // Edit Bill Modal Component
-function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess }) {
+function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess, onNotify }) {
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [itemError, setItemError] = useState('');
+  const [submitError, setSubmitError] = useState('');
   const [formData, setFormData] = useState({
     customer_name: bill.customer_name || '',
     customer_phone: bill.customer_phone || '',
@@ -732,47 +1032,60 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
   const [currentItem, setCurrentItem] = useState({
     medicine_id: '',
     medicine_name: '',
-    quantity: 1,
+    quantity: '',
     price: 0,
     total: 0
   });
 
+  const recalculateTotals = (items, nextFormData = formData) => {
+    const subtotal = items.reduce((sum, item) => sum + item.total, 0);
+    const gstRate = parseFloat(nextFormData.gst_percentage) || 0;
+    const gst_amount = (subtotal * gstRate) / 100;
+    const grand_total = subtotal + gst_amount;
+
+    return {
+      subtotal,
+      gst_amount,
+      grand_total
+    };
+  };
+
   const handleAddItem = () => {
-    if (!currentItem.medicine_id || currentItem.quantity <= 0) {
-      alert('Please select a medicine and enter valid quantity');
+    setItemError('');
+    const quantity = Number(currentItem.quantity);
+
+    if (!currentItem.medicine_id || !Number.isFinite(quantity) || quantity <= 0) {
+      setItemError('Please select a medicine and enter a valid quantity.');
       return;
     }
 
     const medicine = medicines.find(m => m._id === currentItem.medicine_id);
     if (!medicine) return;
 
-    if (currentItem.quantity > medicine.quantity) {
-      alert(`Only ${medicine.quantity} units available!`);
+    if (quantity > medicine.quantity) {
+      setItemError(`Only ${medicine.quantity} units available for ${medicine.name}.`);
       return;
     }
 
     const newItem = {
       ...currentItem,
-      total: currentItem.quantity * currentItem.price
+      quantity,
+      total: quantity * currentItem.price
     };
 
     const newItems = [...formData.items, newItem];
-    const subtotal = newItems.reduce((sum, item) => sum + item.total, 0);
-    const gst_amount = (subtotal * formData.gst_percentage) / 100;
-    const grand_total = subtotal + gst_amount;
+    const totals = recalculateTotals(newItems);
 
     setFormData({
       ...formData,
       items: newItems,
-      subtotal,
-      gst_amount,
-      grand_total
+      ...totals
     });
 
     setCurrentItem({
       medicine_id: '',
       medicine_name: '',
-      quantity: 1,
+      quantity: '',
       price: 0,
       total: 0
     });
@@ -780,16 +1093,12 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
 
   const handleRemoveItem = (index) => {
     const newItems = formData.items.filter((_, i) => i !== index);
-    const subtotal = newItems.reduce((sum, item) => sum + item.total, 0);
-    const gst_amount = (subtotal * formData.gst_percentage) / 100;
-    const grand_total = subtotal + gst_amount;
+    const totals = recalculateTotals(newItems);
 
     setFormData({
       ...formData,
       items: newItems,
-      subtotal,
-      gst_amount,
-      grand_total
+      ...totals
     });
   };
 
@@ -799,18 +1108,44 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
       setCurrentItem({
         medicine_id: medicine._id,
         medicine_name: medicine.name,
-        quantity: 1,
+        quantity: '1',
         price: medicine.price,
         total: medicine.price
       });
     }
   };
 
+  const handleGstPercentageChange = (value) => {
+    const nextFormData = {
+      ...formData,
+      gst_percentage: value
+    };
+    const totals = recalculateTotals(formData.items, nextFormData);
+
+    setFormData({
+      ...nextFormData,
+      ...totals
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setSubmitError('');
+    setItemError('');
+
+    const nextErrors = {};
+
+    if (!formData.customer_name.trim()) {
+      nextErrors.customer_name = 'Customer name is required.';
+    }
 
     if (formData.items.length === 0) {
-      alert('Please add at least one item to the bill');
+      setItemError('Please add at least one medicine item to update this bill.');
+    }
+
+    setFieldErrors(nextErrors);
+
+    if (Object.keys(nextErrors).length > 0 || formData.items.length === 0) {
       return;
     }
 
@@ -818,10 +1153,12 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
       // Delete old bill and create new one (since we need to restore/update stock)
       await api.deleteBill(bill._id);
       await api.createBill(formData);
-      alert('✅ Bill updated successfully!');
+      if (onNotify) {
+        onNotify('Bill updated successfully.');
+      }
       onSuccess();
     } catch (error) {
-      alert('❌ Error updating bill: ' + error.message);
+      setSubmitError(error.message || 'Error updating bill. Please try again.');
     }
   };
 
@@ -839,6 +1176,14 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          {submitError && (
+            <div className={`p-3 rounded-lg border ${
+              isDark ? 'bg-red-900/20 border-red-700 text-red-300' : 'bg-red-50 border-red-200 text-red-700'
+            }`}>
+              {submitError}
+            </div>
+          )}
+
           {/* Customer Details */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
@@ -851,6 +1196,9 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
                 className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
                 placeholder="Enter customer name"
               />
+              {fieldErrors.customer_name && (
+                <p className="text-sm text-red-500 mt-1">{fieldErrors.customer_name}</p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium mb-2">Phone Number</label>
@@ -930,11 +1278,12 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
                   min="1"
                   value={currentItem.quantity}
                   onChange={(e) => {
-                    const qty = parseInt(e.target.value) || 1;
+                    const qtyRaw = e.target.value;
+                    const qty = parseInt(qtyRaw, 10);
                     setCurrentItem({
                       ...currentItem,
-                      quantity: qty,
-                      total: qty * currentItem.price
+                      quantity: qtyRaw,
+                      total: (Number.isFinite(qty) ? qty : 0) * currentItem.price
                     });
                   }}
                   className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-800 border-gray-600' : 'border-gray-300'}`}
@@ -950,6 +1299,9 @@ function EditBillModal({ isDark, bill, medicines, customers, onClose, onSuccess 
                 Add
               </button>
             </div>
+            {itemError && (
+              <p className="text-sm text-red-500 mt-2">{itemError}</p>
+            )}
           </div>
 
           {/* Items List */}
@@ -1532,7 +1884,7 @@ function AllBillsModal({ isDark, bills, onClose, onViewBill }) {
 }
 
 // Manage Stock Modal Component
-function ManageStockModal({ isDark, medicines, onClose }) {
+function ManageStockModal({ isDark, medicines, onClose, onNotify }) {
   const [selectedMedicine, setSelectedMedicine] = useState('');
   const [quantity, setQuantity] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -1544,7 +1896,9 @@ function ManageStockModal({ isDark, medicines, onClose }) {
 
   const handleUpdateStock = async () => {
     if (!selectedMedicine || !quantity) {
-      alert('Please select a medicine and enter quantity');
+      if (onNotify) {
+        onNotify('Please select a medicine and enter quantity.', 'error');
+      }
       return;
     }
 
@@ -1558,12 +1912,16 @@ function ManageStockModal({ isDark, medicines, onClose }) {
 
     try {
       await api.updateMedicine(medicine._id, updatedMedicine);
-      alert('✅ Stock updated successfully!');
+      if (onNotify) {
+        onNotify('Stock updated successfully.');
+      }
       setSelectedMedicine('');
       setQuantity('');
       onClose();
     } catch (error) {
-      alert('❌ Error updating stock: ' + error.message);
+      if (onNotify) {
+        onNotify(`Error updating stock: ${error.message}`, 'error');
+      }
     }
   };
 

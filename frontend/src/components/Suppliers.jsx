@@ -606,15 +606,15 @@ export default function Suppliers() {
                         <div className="text-right">
                           <div className="font-bold">₹{po.total_amount.toLocaleString()}</div>
                           <span className={`text-xs px-2 py-1 rounded-full ${
-                            po.status === 'received'
+                            ['received', 'delivered'].includes(po.status)
                               ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
-                              : po.status === 'approved'
+                              : ['approved', 'ordered'].includes(po.status)
                               ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200'
                               : po.status === 'pending'
                               ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
                               : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
                           }`}>
-                            {po.status}
+                            {(po.status || '').charAt(0).toUpperCase() + (po.status || '').slice(1)}
                           </span>
                         </div>
                       </div>

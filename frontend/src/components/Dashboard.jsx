@@ -24,12 +24,36 @@ import { api } from '../services/api';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-export default function Dashboard() {
+export default function Dashboard({ onBillCreated }) {
   const { isDark } = useTheme();
   const [medicines, setMedicines] = useState([]);
   const [sales, setSales] = useState([]);
-  const [summary, setSummary] = useState([]);
   const [expiring, setExpiring] = useState([]);
+
+  const buildSalesFeed = (salesData, billsData) => {
+    const directSales = (salesData || []).map((sale) => ({
+      ...sale,
+      source: 'sales'
+    }));
+
+    const billSales = (billsData || []).flatMap((bill) =>
+      (bill.items || []).map((item, index) => ({
+        _id: `${bill._id || bill.bill_number || 'bill'}-${index}`,
+        medicine_id: item.medicine_id,
+        medicine_name: item.medicine_name,
+        quantity: item.quantity,
+        price: item.price,
+        total: item.total,
+        sale_date: bill.created_at,
+        source: 'billing',
+        bill_number: bill.bill_number
+      }))
+    );
+
+    return [...directSales, ...billSales].sort(
+      (a, b) => new Date(b.sale_date) - new Date(a.sale_date)
+    );
+  };
 
   useEffect(() => {
     loadData();
@@ -37,16 +61,17 @@ export default function Dashboard() {
 
   const loadData = async () => {
     try {
-      const [medData, salesData, summaryData, expiringData] = await Promise.all([
+      const [medData, salesData, billsData, expiringData] = await Promise.all([
         api.getMedicines(),
         api.getSales(),
-        api.getSalesSummary(),
+        api.getBills(),
         api.getExpiringMedicines(),
       ]);
 
+      const unifiedSalesFeed = buildSalesFeed(salesData, billsData);
+
       setMedicines(medData);
-      setSales(salesData);
-      setSummary(summaryData);
+      setSales(unifiedSalesFeed);
       setExpiring(expiringData);
     } catch (error) {
       console.error('Error loading data:', error);
@@ -170,7 +195,12 @@ export default function Dashboard() {
 
       {/* Modal for actions */}
       {showModal && modalType === 'new-bill' && (
-        <NewBillModal isDark={isDark} onClose={closeModal} medicines={medicines} />
+        <NewBillModal
+          isDark={isDark}
+          onClose={closeModal}
+          medicines={medicines}
+          onBillCreated={onBillCreated}
+        />
       )}
       
       {showModal && modalType === 'add-stock' && (
@@ -223,13 +253,16 @@ function StatCard({ icon, title, value, color, gradient }) {
 }
 
 // New Bill Modal Component
-function NewBillModal({ isDark, onClose, medicines }) {
+function NewBillModal({ isDark, onClose, medicines, onBillCreated }) {
   const [formData, setFormData] = useState({
     medicine_id: '',
     medicine_name: '',
     quantity: '',
     price: '',
     available_stock: 0,
+    customer_name: 'Walk-in Customer',
+    payment_mode: 'Cash',
+    gst_percentage: 18,
   });
   const [error, setError] = useState('');
 
@@ -255,20 +288,39 @@ function NewBillModal({ isDark, onClose, medicines }) {
       return;
     }
 
-    const saleData = {
-      medicine_id: formData.medicine_id,
-      medicine_name: formData.medicine_name,
-      quantity: requestedQty,
-      price: parseFloat(formData.price),
-      total: requestedQty * parseFloat(formData.price),
+    const unitPrice = parseFloat(formData.price);
+    const lineTotal = requestedQty * unitPrice;
+    const gstPercentage = parseFloat(formData.gst_percentage) || 0;
+    const gstAmount = (lineTotal * gstPercentage) / 100;
+    const grandTotal = lineTotal + gstAmount;
+
+    const billData = {
+      customer_name: formData.customer_name?.trim() || 'Walk-in Customer',
+      payment_mode: formData.payment_mode,
+      items: [
+        {
+          medicine_id: formData.medicine_id,
+          medicine_name: formData.medicine_name,
+          quantity: requestedQty,
+          price: unitPrice,
+          total: lineTotal,
+        },
+      ],
+      subtotal: lineTotal,
+      gst_percentage: gstPercentage,
+      gst_amount: gstAmount,
+      grand_total: grandTotal,
     };
 
     try {
-      await api.addSale(saleData);
-      alert('✅ Sale recorded successfully!');
+      await api.createBill(billData);
+      alert('✅ Bill created successfully!');
       onClose();
+      if (onBillCreated) {
+        onBillCreated();
+      }
     } catch (error) {
-      setError(error.message || 'Error recording sale');
+      setError(error.message || 'Error creating bill');
     }
   };
 
@@ -303,6 +355,32 @@ function NewBillModal({ isDark, onClose, medicines }) {
           {formData.medicine_id && (
             <>
               <div>
+                <label className="block text-sm font-medium mb-2">Customer Name *</label>
+                <input
+                  type="text"
+                  required
+                  value={formData.customer_name}
+                  onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
+                  className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
+                  placeholder="Enter customer name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Payment Mode *</label>
+                <select
+                  required
+                  value={formData.payment_mode}
+                  onChange={(e) => setFormData({ ...formData, payment_mode: e.target.value })}
+                  className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
+                >
+                  <option value="Cash">Cash</option>
+                  <option value="Card">Card</option>
+                  <option value="UPI">UPI</option>
+                </select>
+              </div>
+
+              <div>
                 <label className="block text-sm font-medium mb-2">Quantity *</label>
                 <input
                   type="number"
@@ -327,9 +405,27 @@ function NewBillModal({ isDark, onClose, medicines }) {
                 />
               </div>
 
+              <div>
+                <label className="block text-sm font-medium mb-2">GST %</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={formData.gst_percentage}
+                  onChange={(e) => setFormData({ ...formData, gst_percentage: e.target.value })}
+                  className={`w-full px-4 py-2 border rounded-lg ${isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`}
+                />
+              </div>
+
               <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg">
                 <p className="font-semibold">
-                  Total: ₹{(formData.quantity * formData.price || 0).toFixed(2)}
+                  Subtotal: ₹{(formData.quantity * formData.price || 0).toFixed(2)}
+                </p>
+                <p className="text-sm">
+                  GST: ₹{(((formData.quantity * formData.price || 0) * (parseFloat(formData.gst_percentage) || 0)) / 100).toFixed(2)}
+                </p>
+                <p className="font-semibold">
+                  Grand Total: ₹{((formData.quantity * formData.price || 0) + (((formData.quantity * formData.price || 0) * (parseFloat(formData.gst_percentage) || 0)) / 100)).toFixed(2)}
                 </p>
               </div>
             </>
@@ -353,7 +449,7 @@ function NewBillModal({ isDark, onClose, medicines }) {
               type="submit"
               className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
-              Create Sale
+              Create Bill
             </button>
           </div>
         </form>

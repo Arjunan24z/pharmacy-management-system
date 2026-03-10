@@ -1,6 +1,19 @@
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, validator
 from typing import Optional
 from datetime import datetime
+
+ALLOWED_MEDICINE_CATEGORIES = (
+    "Tablet",
+    "Capsule",
+    "Syrup",
+    "Injection",
+    "Cream",
+    "Drops",
+    "Ointment",
+    "Powder",
+    "Inhaler",
+    "Other",
+)
 
 class User(BaseModel):
     email: EmailStr
@@ -29,6 +42,21 @@ class Medicine(BaseModel):
     expiry_date: str
     category: str
     reorder_level: int = 50
+
+    @validator("name", "batch_no")
+    def validate_required_text_fields(cls, value: str):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be empty")
+        return normalized
+
+    @validator("category")
+    def validate_category(cls, value: str):
+        normalized = value.strip().title()
+        if normalized not in ALLOWED_MEDICINE_CATEGORIES:
+            allowed = ", ".join(ALLOWED_MEDICINE_CATEGORIES)
+            raise ValueError(f"category must be one of: {allowed}")
+        return normalized
 
 class Sale(BaseModel):
     medicine_id: str

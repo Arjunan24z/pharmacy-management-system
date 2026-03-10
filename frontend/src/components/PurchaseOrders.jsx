@@ -85,8 +85,8 @@ const PurchaseOrders = () => {
     return {
       total: purchaseOrders.length,
       pending: purchaseOrders.filter(po => po.status === 'Pending').length,
-      approved: purchaseOrders.filter(po => po.status === 'Approved').length,
-      received: purchaseOrders.filter(po => po.status === 'Received').length
+      ordered: purchaseOrders.filter(po => po.status === 'Ordered').length,
+      delivered: purchaseOrders.filter(po => po.status === 'Delivered').length
     };
   };
 
@@ -161,16 +161,16 @@ const PurchaseOrders = () => {
     }
   };
 
-  const handleApprovePO = async (poId) => {
-    if (!window.confirm('Are you sure you want to approve this purchase order?')) return;
+  const handlePlaceOrder = async (poId) => {
+    if (!window.confirm('Confirm supplier order placement for this PO?')) return;
 
     try {
-      await api.approvePurchaseOrder(poId, { approved_by: 'Admin' });
-      setSuccess('Purchase order approved successfully');
+      await api.placePurchaseOrder(poId, { ordered_by: 'Admin' });
+      setSuccess('Purchase order marked as Ordered');
       loadData();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError('Failed to approve purchase order: ' + err.message);
+      setError('Failed to mark purchase order as Ordered: ' + err.message);
     }
   };
 
@@ -188,7 +188,7 @@ const PurchaseOrders = () => {
 
     try {
       const data = {
-        items: receiveData.items.map(item => ({
+        items_received: receiveData.items.map(item => ({
           medicine_id: item.medicine_id,
           quantity_received: parseInt(item.quantity_received),
           batch_number: item.batch_number
@@ -196,15 +196,15 @@ const PurchaseOrders = () => {
         payment_status: receiveData.payment_status
       };
 
-      await api.receivePurchaseOrder(selectedPO.id, data);
-      setSuccess('Purchase order received successfully');
+      await api.deliverPurchaseOrder(selectedPO.id, data);
+      setSuccess('Purchase order marked as Delivered');
       setShowReceiveModal(false);
       setSelectedPO(null);
       setReceiveData({ items: [], payment_status: 'Pending' });
       loadData();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError('Failed to receive purchase order: ' + err.message);
+      setError('Failed to mark purchase order as Delivered: ' + err.message);
     }
   };
 
@@ -258,8 +258,8 @@ const PurchaseOrders = () => {
   const getStatusBadge = (status) => {
     const statusColors = {
       'Pending': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
-      'Approved': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-      'Received': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+      'Ordered': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
+      'Delivered': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
       'Cancelled': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
     };
 
@@ -268,6 +268,47 @@ const PurchaseOrders = () => {
         {status}
       </span>
     );
+  };
+
+  const formatDateTime = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString();
+  };
+
+  const getLifecycleSteps = (po) => {
+    const isCancelled = po.status === 'Cancelled';
+    const isOrderedDone = po.status === 'Ordered' || po.status === 'Delivered';
+    const isDeliveredDone = po.status === 'Delivered';
+
+    return [
+      {
+        key: 'created',
+        label: 'Created',
+        complete: true,
+        timestamp: formatDateTime(po.created_at)
+      },
+      {
+        key: 'ordered',
+        label: 'Ordered',
+        complete: isOrderedDone,
+        timestamp: formatDateTime(po.ordered_at || po.approved_at)
+      },
+      {
+        key: 'delivered',
+        label: 'Delivered',
+        complete: isDeliveredDone,
+        timestamp: formatDateTime(po.delivered_at || po.received_at)
+      },
+      {
+        key: 'cancelled',
+        label: 'Cancelled',
+        complete: isCancelled,
+        timestamp: formatDateTime(po.cancelled_at),
+        optional: true
+      }
+    ];
   };
 
   const stats = getStatistics();
@@ -335,8 +376,8 @@ const PurchaseOrders = () => {
           <div className={`p-6 rounded-lg shadow ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">Approved</p>
-                <p className="text-2xl font-bold text-blue-600">{stats.approved}</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Ordered</p>
+                <p className="text-2xl font-bold text-blue-600">{stats.ordered}</p>
               </div>
               <Check className="w-10 h-10 text-blue-500" />
             </div>
@@ -344,8 +385,8 @@ const PurchaseOrders = () => {
           <div className={`p-6 rounded-lg shadow ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">Received</p>
-                <p className="text-2xl font-bold text-green-600">{stats.received}</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Delivered</p>
+                <p className="text-2xl font-bold text-green-600">{stats.delivered}</p>
               </div>
               <Package className="w-10 h-10 text-green-500" />
             </div>
@@ -373,7 +414,7 @@ const PurchaseOrders = () => {
 
             {/* Status Filter */}
             <div className="flex gap-2">
-              {['All', 'Pending', 'Approved', 'Received', 'Cancelled'].map((status) => (
+              {['All', 'Pending', 'Ordered', 'Delivered', 'Cancelled'].map((status) => (
                 <button
                   key={status}
                   onClick={() => setStatusFilter(status)}
@@ -437,9 +478,9 @@ const PurchaseOrders = () => {
                           {po.status === 'Pending' && (
                             <>
                               <button
-                                onClick={() => handleApprovePO(po.id)}
+                                onClick={() => handlePlaceOrder(po.id)}
                                 className="p-1 text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300"
-                                title="Approve"
+                                title="Mark Ordered"
                               >
                                 <Check className="w-5 h-5" />
                               </button>
@@ -452,12 +493,12 @@ const PurchaseOrders = () => {
                               </button>
                             </>
                           )}
-                          {po.status === 'Approved' && (
+                          {po.status === 'Ordered' && (
                             <>
                               <button
                                 onClick={() => openReceiveModal(po)}
                                 className="p-1 text-purple-600 hover:text-purple-800 dark:text-purple-400 dark:hover:text-purple-300"
-                                title="Receive"
+                                title="Mark Delivered"
                               >
                                 <Package className="w-5 h-5" />
                               </button>
@@ -660,7 +701,7 @@ const PurchaseOrders = () => {
           }`}>
             <div className="p-6">
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold">Receive Purchase Order - {selectedPO.po_number}</h2>
+                <h2 className="text-2xl font-bold">Mark Delivery - {selectedPO.po_number}</h2>
                 <button
                   onClick={() => {
                     setShowReceiveModal(false);
@@ -689,7 +730,7 @@ const PurchaseOrders = () => {
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           <div>
-                            <label className="block text-sm font-medium mb-1">Quantity Received *</label>
+                            <label className="block text-sm font-medium mb-1">Quantity Delivered *</label>
                             <input
                               type="number"
                               value={item.quantity_received}
@@ -772,7 +813,7 @@ const PurchaseOrders = () => {
                     type="submit"
                     className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
                   >
-                    Confirm Receipt
+                    Confirm Delivered
                   </button>
                 </div>
               </form>
@@ -833,6 +874,37 @@ const PurchaseOrders = () => {
                         <p className="font-semibold">{selectedPO.payment_status}</p>
                       </div>
                     )}
+                  </div>
+                </div>
+
+                {/* Lifecycle */}
+                <div>
+                  <h3 className="font-semibold mb-3">Lifecycle</h3>
+                  <div className={`p-4 rounded-lg ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                    <div className="space-y-3">
+                      {getLifecycleSteps(selectedPO)
+                        .filter((step) => !step.optional || step.complete)
+                        .map((step, index, arr) => (
+                          <div key={step.key} className="flex items-start">
+                            <div className="flex flex-col items-center mr-3">
+                              <div
+                                className={`w-3 h-3 rounded-full mt-1 ${
+                                  step.complete ? 'bg-green-500' : isDark ? 'bg-gray-500' : 'bg-gray-300'
+                                }`}
+                              />
+                              {index < arr.length - 1 && (
+                                <div className={`w-0.5 h-8 mt-1 ${isDark ? 'bg-gray-500' : 'bg-gray-300'}`} />
+                              )}
+                            </div>
+                            <div className="flex-1">
+                              <p className="font-medium">{step.label}</p>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">
+                                {step.timestamp || (step.complete ? 'Timestamp unavailable' : 'Not completed yet')}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
                   </div>
                 </div>
 

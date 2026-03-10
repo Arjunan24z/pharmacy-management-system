@@ -120,7 +120,27 @@ Or run it directly:
 docker exec -it pharmacy_backend python seed_data.py
 ```
 
-#### 5. Access the Application
+#### 5. One-Time PO Status Migration (if upgrading old data)
+
+If your existing data has legacy purchase order statuses (`approved`, `received`), run this one-time migration to align with the latest lifecycle (`ordered`, `delivered`).
+
+```bash
+# Preview changes first (dry run)
+docker exec -it pharmacy_backend python migrate_po_statuses.py
+
+# Apply changes
+docker exec -it pharmacy_backend python migrate_po_statuses.py --apply
+```
+
+#### 6. Verify PO Status Migration (recommended)
+
+Run this verification step to capture evidence-ready counts and ensure no legacy statuses remain.
+
+```bash
+docker exec -it pharmacy_backend python verify_po_status_migration.py
+```
+
+#### 7. Access the Application
 
 - **Frontend**: http://localhost:5173
 - **Backend API Docs**: http://localhost:8000/docs
@@ -131,7 +151,7 @@ docker exec -it pharmacy_backend python seed_data.py
 - Pharmacist: `pharmacist@pharmacy.com` / `pharma123`
 - Cashier: `cashier@pharmacy.com` / `cashier123`
 
-#### 6. Stop the Application
+#### 8. Stop the Application
 
 ```bash
 # Stop all containers
@@ -211,7 +231,28 @@ source venv/bin/activate  # Activate virtual environment
 python seed_data.py
 ```
 
-#### 5. Frontend Setup (in a new terminal)
+#### 5. One-Time PO Status Migration (if upgrading old data)
+
+```bash
+cd backend
+source venv/bin/activate
+
+# Preview changes first (dry run)
+python migrate_po_statuses.py
+
+# Apply changes
+python migrate_po_statuses.py --apply
+```
+
+#### 6. Verify PO Status Migration (recommended)
+
+```bash
+cd backend
+source venv/bin/activate
+python verify_po_status_migration.py
+```
+
+#### 7. Frontend Setup (in a new terminal)
 
 ```bash
 cd frontend
@@ -225,7 +266,7 @@ npm run dev
 
 Frontend will be available at http://localhost:5173
 
-#### 6. Access the Application
+#### 8. Access the Application
 
 - **Frontend**: http://localhost:5173
 - **Backend API**: http://localhost:8000/docs

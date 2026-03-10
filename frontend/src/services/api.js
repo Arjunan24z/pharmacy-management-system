@@ -1,5 +1,20 @@
 const API_BASE = 'http://localhost:8000';
 
+const PO_STATUS_LABELS = {
+  pending: 'Pending',
+  ordered: 'Ordered',
+  approved: 'Ordered',
+  delivered: 'Delivered',
+  received: 'Delivered',
+  cancelled: 'Cancelled'
+};
+
+const normalizePurchaseOrder = (po) => ({
+  ...po,
+  id: po.id || po._id,
+  status: PO_STATUS_LABELS[(po.status || '').toLowerCase()] || po.status || 'Pending'
+});
+
 export const api = {
   // Medicines
   getMedicines: async () => {
@@ -20,7 +35,20 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(medicine)
       });
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      if (!res.ok) {
+        let detail = `HTTP error! status: ${res.status}`;
+        try {
+          const errorData = await res.json();
+          if (Array.isArray(errorData?.detail)) {
+            detail = errorData.detail.map(item => item.msg).join(', ');
+          } else if (typeof errorData?.detail === 'string') {
+            detail = errorData.detail;
+          }
+        } catch (_) {
+          // Keep fallback message if response body is not JSON.
+        }
+        throw new Error(detail);
+      }
       return await res.json();
     } catch (error) {
       console.error('Error adding medicine:', error);
@@ -35,7 +63,20 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(medicine)
       });
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      if (!res.ok) {
+        let detail = `HTTP error! status: ${res.status}`;
+        try {
+          const errorData = await res.json();
+          if (Array.isArray(errorData?.detail)) {
+            detail = errorData.detail.map(item => item.msg).join(', ');
+          } else if (typeof errorData?.detail === 'string') {
+            detail = errorData.detail;
+          }
+        } catch (_) {
+          // Keep fallback message if response body is not JSON.
+        }
+        throw new Error(detail);
+      }
       return await res.json();
     } catch (error) {
       console.error('Error updating medicine:', error);
@@ -520,7 +561,8 @@ export const api = {
       
       const res = await fetch(`${API_BASE}/api/purchase-orders/?${params}`);
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      return data.map(normalizePurchaseOrder);
     } catch (error) {
       console.error('Error fetching purchase orders:', error);
       return [];
@@ -531,7 +573,8 @@ export const api = {
     try {
       const res = await fetch(`${API_BASE}/api/purchase-orders/${poId}`);
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      return normalizePurchaseOrder(data);
     } catch (error) {
       console.error('Error fetching purchase order:', error);
       throw error;
@@ -546,7 +589,8 @@ export const api = {
         body: JSON.stringify(po)
       });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      return normalizePurchaseOrder(data);
     } catch (error) {
       console.error('Error creating purchase order:', error);
       throw error;
@@ -561,7 +605,8 @@ export const api = {
         body: JSON.stringify(po)
       });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      return normalizePurchaseOrder(data);
     } catch (error) {
       console.error('Error updating purchase order:', error);
       throw error;
@@ -576,11 +621,16 @@ export const api = {
         body: JSON.stringify(approvalData)
       });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      return normalizePurchaseOrder(data);
     } catch (error) {
       console.error('Error approving purchase order:', error);
       throw error;
     }
+  },
+
+  placePurchaseOrder: async (poId, orderData) => {
+    return api.approvePurchaseOrder(poId, orderData);
   },
 
   receivePurchaseOrder: async (poId, receiveData) => {
@@ -591,11 +641,19 @@ export const api = {
         body: JSON.stringify(receiveData)
       });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      return {
+        ...data,
+        purchase_order: data?.purchase_order ? normalizePurchaseOrder(data.purchase_order) : data?.purchase_order
+      };
     } catch (error) {
       console.error('Error receiving purchase order:', error);
       throw error;
     }
+  },
+
+  deliverPurchaseOrder: async (poId, deliveryData) => {
+    return api.receivePurchaseOrder(poId, deliveryData);
   },
 
   cancelPurchaseOrder: async (poId, cancelData) => {
@@ -606,7 +664,8 @@ export const api = {
         body: JSON.stringify(cancelData)
       });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      return normalizePurchaseOrder(data);
     } catch (error) {
       console.error('Error cancelling purchase order:', error);
       throw error;

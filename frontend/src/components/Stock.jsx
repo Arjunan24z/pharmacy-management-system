@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useTheme } from '../contexts/ThemeContext';
+import { MEDICINE_CATEGORIES } from '../constants/medicine';
 
 export default function Stock() {
   const { isDark } = useTheme();
@@ -354,22 +355,33 @@ function StatsCard({ icon, title, value, gradient, isDark }) {
 function MedicineModal({ isDark, medicine, onClose, onSuccess }) {
   const [formData, setFormData] = useState({
     name: medicine?.name || '',
+    batch_no: medicine?.batch_no || '',
     category: medicine?.category || 'Tablet',
     manufacturer: medicine?.manufacturer || '',
     price: medicine?.price || '',
     quantity: medicine?.quantity || '',
-    reorder_level: medicine?.reorder_level || '',
+    reorder_level: medicine?.reorder_level || 50,
     expiry_date: medicine?.expiry_date ? medicine.expiry_date.split('T')[0] : ''
   });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      const payload = {
+        name: formData.name.trim(),
+        batch_no: formData.batch_no.trim(),
+        category: formData.category,
+        price: parseFloat(formData.price),
+        quantity: parseInt(formData.quantity, 10),
+        reorder_level: parseInt(formData.reorder_level, 10),
+        expiry_date: formData.expiry_date
+      };
+
       if (medicine) {
-        await api.updateMedicine(medicine._id, formData);
+        await api.updateMedicine(medicine._id, payload);
         alert('✅ Medicine updated successfully!');
       } else {
-        await api.addMedicine(formData);
+        await api.addMedicine(payload);
         alert('✅ Medicine added successfully!');
       }
       onSuccess();
@@ -417,13 +429,24 @@ function MedicineModal({ isDark, medicine, onClose, onSuccess }) {
                   isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'
                 }`}
               >
-                <option value="Tablet">Tablet</option>
-                <option value="Syrup">Syrup</option>
-                <option value="Capsule">Capsule</option>
-                <option value="Injection">Injection</option>
-                <option value="Cream">Cream</option>
-                <option value="Drops">Drops</option>
+                {MEDICINE_CATEGORIES.map((category) => (
+                  <option key={category} value={category}>{category}</option>
+                ))}
               </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">Batch No *</label>
+              <input
+                type="text"
+                required
+                value={formData.batch_no}
+                onChange={(e) => setFormData({ ...formData, batch_no: e.target.value })}
+                className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 ${
+                  isDark ? 'bg-gray-700 border-gray-600' : 'border-gray-300'
+                }`}
+                placeholder="Enter batch number"
+              />
             </div>
 
             <div>

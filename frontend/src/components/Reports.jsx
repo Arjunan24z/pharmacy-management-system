@@ -539,11 +539,28 @@ function InventoryReports({ data, isDark, exportToCSV, COLORS }) {
 // Customer Reports Component
 function CustomerReports({ data, isDark, exportToCSV, COLORS }) {
   const { summary, top_customers, new_customers, purchase_frequency } = data;
+  const [rankingMode, setRankingMode] = useState('revenue');
 
-  const frequencyData = Object.entries(purchase_frequency).map(([key, value]) => ({
-    name: key.replace('_', ' '),
-    value: value
+  const frequencyLabelMap = {
+    '1_purchase': '1 Purchase',
+    '2-5_purchases': '2-5 Purchases',
+    '6-10_purchases': '6-10 Purchases',
+    '11+_purchases': '11+ Purchases'
+  };
+
+  const frequencyData = Object.entries(purchase_frequency || {}).map(([key, value]) => ({
+    name: frequencyLabelMap[key] || key,
+    value: value || 0
   }));
+
+  const hasFrequencyData = frequencyData.some((item) => item.value > 0);
+
+  const rankedTopCustomers = [...(top_customers || [])].sort((a, b) => {
+    if (rankingMode === 'frequency') {
+      return Number(b.bills_count || 0) - Number(a.bills_count || 0);
+    }
+    return Number(b.total_spent || 0) - Number(a.total_spent || 0);
+  });
 
   return (
     <div className="space-y-6">
@@ -586,46 +603,86 @@ function CustomerReports({ data, isDark, exportToCSV, COLORS }) {
       {/* Purchase Frequency Distribution */}
       <div className={`${isDark ? 'bg-gray-800' : 'bg-white'} p-6 rounded-lg shadow-sm`}>
         <h3 className="text-lg font-semibold mb-4">Purchase Frequency Distribution</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <RePieChart>
-            <Pie
-              data={frequencyData}
-              cx="50%"
-              cy="50%"
-              labelLine={false}
-              label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-              outerRadius={100}
-              fill="#8884d8"
-              dataKey="value"
-              nameKey="name"
-            >
-              {frequencyData.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-              ))}
-            </Pie>
-            <Tooltip
-              contentStyle={{
-                backgroundColor: isDark ? '#1f2937' : '#ffffff',
-                border: '1px solid ' + (isDark ? '#374151' : '#e5e7eb'),
-                borderRadius: '0.5rem'
-              }}
-            />
-          </RePieChart>
-        </ResponsiveContainer>
+        {hasFrequencyData ? (
+          <>
+            <ResponsiveContainer width="100%" height={320}>
+              <RePieChart>
+                <Pie
+                  data={frequencyData}
+                  cx="50%"
+                  cy="45%"
+                  labelLine={false}
+                  outerRadius={90}
+                  fill="#8884d8"
+                  dataKey="value"
+                  nameKey="name"
+                >
+                  {frequencyData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  formatter={(value, name) => [`${value}`, name]}
+                  contentStyle={{
+                    backgroundColor: isDark ? '#1f2937' : '#ffffff',
+                    border: '1px solid ' + (isDark ? '#374151' : '#e5e7eb'),
+                    borderRadius: '0.5rem'
+                  }}
+                />
+                <Legend verticalAlign="bottom" height={40} />
+              </RePieChart>
+            </ResponsiveContainer>
+          </>
+        ) : (
+          <div className="h-[320px] flex items-center justify-center text-gray-500">
+            No purchase frequency data available for selected range.
+          </div>
+        )}
       </div>
 
       {/* Top Customers */}
       <div className={`${isDark ? 'bg-gray-800' : 'bg-white'} p-6 rounded-lg shadow-sm`}>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">Top 20 Customers by Revenue</h3>
-          <button
-            onClick={() => exportToCSV(top_customers, 'top_customers')}
-            className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            <Download size={16} />
-            Export
-          </button>
+          <h3 className="text-lg font-semibold">
+            Top 20 Customers by {rankingMode === 'frequency' ? 'Purchase Frequency' : 'Revenue'}
+          </h3>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setRankingMode('revenue')}
+              className={`px-3 py-2 text-sm rounded-lg border ${
+                rankingMode === 'revenue'
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : isDark
+                  ? 'border-gray-600 hover:bg-gray-700'
+                  : 'border-gray-300 hover:bg-gray-100'
+              }`}
+            >
+              Revenue
+            </button>
+            <button
+              onClick={() => setRankingMode('frequency')}
+              className={`px-3 py-2 text-sm rounded-lg border ${
+                rankingMode === 'frequency'
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : isDark
+                  ? 'border-gray-600 hover:bg-gray-700'
+                  : 'border-gray-300 hover:bg-gray-100'
+              }`}
+            >
+              Frequency
+            </button>
+            <button
+              onClick={() => exportToCSV(rankedTopCustomers, `top_customers_${rankingMode}`)}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              <Download size={16} />
+              Export
+            </button>
+          </div>
         </div>
+        <p className={`text-sm mb-3 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+          Frequency ranking uses number of bills in the selected date range.
+        </p>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className={`${isDark ? 'bg-gray-700' : 'bg-gray-50'}`}>
@@ -639,8 +696,8 @@ function CustomerReports({ data, isDark, exportToCSV, COLORS }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-              {top_customers.map((customer, index) => (
-                <tr key={index} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+              {rankedTopCustomers.map((customer, index) => (
+                <tr key={`${customer.customer_name}-${customer.customer_phone}-${index}`} className="hover:bg-gray-50 dark:hover:bg-gray-700">
                   <td className="px-4 py-3">
                     {index < 3 ? (
                       <Award size={20} className={index === 0 ? 'text-yellow-500' : index === 1 ? 'text-gray-400' : 'text-orange-600'} />
@@ -651,8 +708,8 @@ function CustomerReports({ data, isDark, exportToCSV, COLORS }) {
                   <td className="px-4 py-3 font-medium">{customer.customer_name}</td>
                   <td className="px-4 py-3 text-gray-500">{customer.customer_phone}</td>
                   <td className="px-4 py-3 text-right">{customer.bills_count}</td>
-                  <td className="px-4 py-3 text-right font-semibold text-green-600">₹{customer.total_spent.toLocaleString()}</td>
-                  <td className="px-4 py-3 text-right">₹{customer.avg_bill_value.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-semibold text-green-600">₹{Number(customer.total_spent || 0).toLocaleString()}</td>
+                  <td className="px-4 py-3 text-right">₹{Number(customer.avg_bill_value || 0).toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>

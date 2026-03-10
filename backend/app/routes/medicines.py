@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.database import get_database
-from app.models import Medicine
+from app.models import Medicine, ALLOWED_MEDICINE_CATEGORIES
 from bson import ObjectId
 from datetime import datetime
 
@@ -36,6 +36,10 @@ async def get_expiring_medicines():
             expiring.append(med)
     
     return sorted(expiring, key=lambda x: x["days_until_expiry"])
+
+@router.get("/categories")
+async def get_medicine_categories():
+    return {"categories": list(ALLOWED_MEDICINE_CATEGORIES)}
 
 @router.put("/{medicine_id}")
 async def update_medicine(medicine_id: str, medicine: Medicine):

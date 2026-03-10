@@ -148,7 +148,14 @@ export default function App() {
       {/* MAIN CONTENT */}
       <main className="p-6 animate-fadeIn">
         <div className="max-w-[1600px] mx-auto">
-          {activeTab === 'dashboard' && <Dashboard />}
+          {activeTab === 'dashboard' && (
+            <Dashboard
+              onBillCreated={() => {
+                sessionStorage.setItem('billingToast', 'dashboard-bill-created');
+                setActiveTab('billing');
+              }}
+            />
+          )}
           {activeTab === 'stock' && <Stock />}
           {activeTab === 'customers' && <Customers />}
           {activeTab === 'billing' && <Billing />}
